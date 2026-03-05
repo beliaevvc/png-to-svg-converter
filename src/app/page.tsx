@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 
 interface ConversionSettings {
   svgVersion: "1.0" | "1.1" | "tiny1.2";
@@ -42,6 +42,20 @@ const defaultSettings: ConversionSettings = {
   threshold: 128,
 };
 
+// #region agent log - Client-side tracing
+declare global {
+  interface Window {
+    ImageTracer: {
+      imageToSVG: (
+        url: string,
+        callback: (svgString: string) => void,
+        options?: Record<string, unknown>
+      ) => void;
+    };
+  }
+}
+// #endregion
+
 export default function Home() {
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
@@ -50,7 +64,30 @@ export default function Home() {
   const [isDragOver, setIsDragOver] = useState(false);
   const [settings, setSettings] = useState<ConversionSettings>(defaultSettings);
   const [error, setError] = useState<string | null>(null);
+  const [tracerLoaded, setTracerLoaded] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Load ImageTracer library
+  useEffect(() => {
+    // #region agent log - Load ImageTracer script
+    console.log("[DEBUG] Loading ImageTracer script...");
+    const script = document.createElement("script");
+    script.src = "https://cdn.jsdelivr.net/npm/imagetracerjs@1.2.6/imagetracer_v1.2.6.js";
+    script.async = true;
+    script.onload = () => {
+      console.log("[DEBUG] ImageTracer loaded successfully");
+      setTracerLoaded(true);
+    };
+    script.onerror = (e) => {
+      console.error("[DEBUG] ImageTracer failed to load:", e);
+      setError("Failed to load image tracer library");
+    };
+    document.body.appendChild(script);
+    return () => {
+      document.body.removeChild(script);
+    };
+    // #endregion
+  }, []);
 
   const handleFile = useCallback((selectedFile: File) => {
     if (!selectedFile.type.startsWith("image/")) {
@@ -89,29 +126,85 @@ export default function Home() {
   }, []);
 
   const handleConvert = async () => {
-    if (!file) return;
+    if (!preview || !tracerLoaded) {
+      setError("Image tracer not ready");
+      return;
+    }
 
     setIsConverting(true);
     setError(null);
 
     try {
-      const formData = new FormData();
-      formData.append("image", file);
-      formData.append("settings", JSON.stringify(settings));
+      // #region agent log - Client conversion
+      console.log("[DEBUG] Starting client-side conversion...");
+      console.log("[DEBUG] Settings:", JSON.stringify(settings));
+      // #endregion
 
-      const response = await fetch("/api/convert", {
-        method: "POST",
-        body: formData,
+      // Map tolerance to ltres (line threshold)
+      const toleranceMap: Record<string, number> = {
+        coarse: 10,
+        medium: 5,
+        fine: 2,
+        superFine: 1,
+      };
+
+      const options = {
+        // Tracing
+        ltres: toleranceMap[settings.lineFitTolerance] || 5,
+        qtres: toleranceMap[settings.lineFitTolerance] || 5,
+        pathomit: 8,
+        // Color quantization
+        colorsampling: 2,
+        numberofcolors: 2,
+        mincolorratio: 0,
+        colorquantcycles: 3,
+        // SVG rendering
+        scale: 1,
+        roundcoords: 1,
+        lcpr: 0,
+        qcpr: 0,
+        desc: false,
+        viewbox: true,
+        // Blur
+        blurradius: 0,
+        blurdelta: 20,
+      };
+
+      // #region agent log - Call ImageTracer
+      console.log("[DEBUG] Calling ImageTracer.imageToSVG with options:", options);
+      // #endregion
+
+      await new Promise<void>((resolve, reject) => {
+        try {
+          window.ImageTracer.imageToSVG(
+            preview,
+            (svgString: string) => {
+              // #region agent log - Conversion result
+              console.log("[DEBUG] Conversion complete, SVG length:", svgString?.length);
+              // #endregion
+              
+              // Replace black with user's color if needed
+              if (settings.outputColor !== "#000000") {
+                svgString = svgString.replace(/fill="#000000"/g, `fill="${settings.outputColor}"`);
+                svgString = svgString.replace(/stroke="#000000"/g, `stroke="${settings.outputColor}"`);
+              }
+              
+              setSvgResult(svgString);
+              resolve();
+            },
+            options
+          );
+        } catch (e) {
+          // #region agent log - Conversion error
+          console.error("[DEBUG] ImageTracer error:", e);
+          // #endregion
+          reject(e);
+        }
       });
-
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.error || "Conversion failed");
-      }
-
-      const data = await response.json();
-      setSvgResult(data.svg);
     } catch (err: unknown) {
+      // #region agent log - Catch error
+      console.error("[DEBUG] Conversion error:", err);
+      // #endregion
       const errorMessage = err && typeof err === "object" && "message" in err 
         ? String(err.message) 
         : "Conversion failed";
@@ -163,6 +256,9 @@ export default function Home() {
         <p className="text-[var(--muted)] text-lg">
           Trace Pixels To Vectors — Fast & Free
         </p>
+        {!tracerLoaded && (
+          <p className="text-yellow-500 text-sm mt-2">Loading image tracer...</p>
+        )}
       </header>
 
       <div className="max-w-6xl mx-auto">
@@ -463,7 +559,7 @@ export default function Home() {
               </button>
               <button
                 onClick={handleConvert}
-                disabled={isConverting}
+                disabled={isConverting || !tracerLoaded}
                 className="btn-primary"
               >
                 {isConverting ? (
@@ -495,7 +591,7 @@ export default function Home() {
 
       {/* Footer */}
       <footer className="text-center mt-16 text-sm text-[var(--muted)]">
-        <p>Built with Next.js + Potrace • Open Source on GitHub</p>
+        <p>Built with Next.js + ImageTracerJS • 100% Client-Side • Open Source on GitHub</p>
         <p className="mt-1">© 2026 0:LimitX</p>
       </footer>
     </main>

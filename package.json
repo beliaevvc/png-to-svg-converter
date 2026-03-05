@@ -9,6 +9,7 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "imagetracerjs": "^1.2.6",
     "next": "16.1.6",
     "potrace": "^2.1.8",
     "react": "19.2.3",
