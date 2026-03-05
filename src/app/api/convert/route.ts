@@ -6,6 +6,9 @@ import { join } from "path";
 import { tmpdir } from "os";
 import { randomUUID } from "crypto";
 
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
 interface ConversionSettings {
   svgVersion: "1.0" | "1.1" | "tiny1.2";
   drawStyle: "fill" | "stroke" | "strokeEdges";
@@ -112,18 +115,21 @@ export async function POST(request: NextRequest) {
         width: metadata.width,
         height: metadata.height,
         originalSize: buffer.length,
-        svgSize: new Blob([svg]).size,
+        svgSize: Buffer.byteLength(svg, "utf8"),
       },
     });
-  } catch (error) {
+  } catch (error: unknown) {
     await Promise.all([
       inputPath && unlink(inputPath).catch(() => {}),
       preparedPath && unlink(preparedPath).catch(() => {}),
     ]);
 
     console.error("Conversion error:", error);
+    const errorMessage = error && typeof error === "object" && "message" in error 
+      ? String(error.message) 
+      : "Conversion failed";
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Conversion failed" },
+      { error: errorMessage },
       { status: 500 }
     );
   }
