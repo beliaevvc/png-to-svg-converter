@@ -111,8 +111,11 @@ export default function Home() {
 
       const data = await response.json();
       setSvgResult(data.svg);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Conversion failed");
+    } catch (err: unknown) {
+      const errorMessage = err && typeof err === "object" && "message" in err 
+        ? String(err.message) 
+        : "Conversion failed";
+      setError(errorMessage);
     } finally {
       setIsConverting(false);
     }
