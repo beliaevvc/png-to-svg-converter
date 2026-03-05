@@ -125,6 +125,64 @@ export default function Home() {
     setIsDragOver(false);
   }, []);
 
+  // Preprocess image - extract alpha channel for transparent images
+  const preprocessImage = (dataUrl: string): Promise<string> => {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext("2d")!;
+        
+        // Draw image to get pixel data
+        ctx.drawImage(img, 0, 0);
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const data = imageData.data;
+        
+        // Check if image has transparency and is mostly light
+        let hasAlpha = false;
+        let totalBrightness = 0;
+        let opaquePixels = 0;
+        
+        for (let i = 0; i < data.length; i += 4) {
+          const alpha = data[i + 3];
+          if (alpha < 255 && alpha > 0) hasAlpha = true;
+          if (alpha > 128) {
+            const brightness = (data[i] + data[i + 1] + data[i + 2]) / 3;
+            totalBrightness += brightness;
+            opaquePixels++;
+          }
+        }
+        
+        const avgBrightness = opaquePixels > 0 ? totalBrightness / opaquePixels : 0;
+        const isLightOnTransparent = hasAlpha && avgBrightness > 200;
+        
+        console.log("[DEBUG] Image analysis:", { hasAlpha, avgBrightness: avgBrightness.toFixed(0), isLightOnTransparent });
+        
+        if (isLightOnTransparent) {
+          // Extract alpha channel as grayscale (inverted for tracing)
+          console.log("[DEBUG] Extracting alpha channel as mask...");
+          for (let i = 0; i < data.length; i += 4) {
+            const alpha = data[i + 3];
+            // Invert: opaque becomes black (for tracing), transparent becomes white
+            const value = 255 - alpha;
+            data[i] = value;     // R
+            data[i + 1] = value; // G
+            data[i + 2] = value; // B
+            data[i + 3] = 255;   // Full opacity
+          }
+          ctx.putImageData(imageData, 0, 0);
+          resolve(canvas.toDataURL("image/png"));
+        } else {
+          // Use original image
+          resolve(dataUrl);
+        }
+      };
+      img.src = dataUrl;
+    });
+  };
+
   const handleConvert = async () => {
     if (!preview || !tracerLoaded) {
       setError("Image tracer not ready");
@@ -135,10 +193,11 @@ export default function Home() {
     setError(null);
 
     try {
-      // #region agent log - Client conversion
       console.log("[DEBUG] Starting client-side conversion...");
-      console.log("[DEBUG] Settings:", JSON.stringify(settings));
-      // #endregion
+      
+      // Preprocess image (handle white-on-transparent)
+      const processedImage = await preprocessImage(preview);
+      console.log("[DEBUG] Image preprocessed, starting trace...");
 
       // Map tolerance to ltres (line threshold)
       const toleranceMap: Record<string, number> = {
@@ -149,45 +208,42 @@ export default function Home() {
       };
 
       const options = {
-        // Tracing
         ltres: toleranceMap[settings.lineFitTolerance] || 5,
         qtres: toleranceMap[settings.lineFitTolerance] || 5,
-        pathomit: 8,
-        // Color quantization
-        colorsampling: 2,
+        pathomit: 4,
+        colorsampling: 0, // Disable color sampling for B&W
         numberofcolors: 2,
         mincolorratio: 0,
-        colorquantcycles: 3,
-        // SVG rendering
+        colorquantcycles: 1,
         scale: 1,
         roundcoords: 1,
         lcpr: 0,
         qcpr: 0,
         desc: false,
         viewbox: true,
-        // Blur
         blurradius: 0,
         blurdelta: 20,
       };
 
-      // #region agent log - Call ImageTracer
-      console.log("[DEBUG] Calling ImageTracer.imageToSVG with options:", options);
-      // #endregion
+      console.log("[DEBUG] Calling ImageTracer with options:", options);
 
       await new Promise<void>((resolve, reject) => {
         try {
           window.ImageTracer.imageToSVG(
-            preview,
+            processedImage,
             (svgString: string) => {
-              // #region agent log - Conversion result
               console.log("[DEBUG] Conversion complete, SVG length:", svgString?.length);
-              // #endregion
               
-              // Replace black with user's color if needed
-              if (settings.outputColor !== "#000000") {
-                svgString = svgString.replace(/fill="#000000"/g, `fill="${settings.outputColor}"`);
-                svgString = svgString.replace(/stroke="#000000"/g, `stroke="${settings.outputColor}"`);
-              }
+              // Replace black with user's output color
+              svgString = svgString.replace(/fill="rgb\(0,0,0\)"/g, `fill="${settings.outputColor}"`);
+              svgString = svgString.replace(/stroke="rgb\(0,0,0\)"/g, `stroke="${settings.outputColor}"`);
+              svgString = svgString.replace(/fill="#000000"/g, `fill="${settings.outputColor}"`);
+              svgString = svgString.replace(/stroke="#000000"/g, `stroke="${settings.outputColor}"`);
+              
+              // Remove white background paths
+              svgString = svgString.replace(/<path[^>]*fill="rgb\(255,255,255\)"[^>]*\/>/g, "");
+              svgString = svgString.replace(/<path[^>]*fill="#ffffff"[^>]*\/>/gi, "");
+              svgString = svgString.replace(/<path[^>]*fill="#FFFFFF"[^>]*\/>/g, "");
               
               setSvgResult(svgString);
               resolve();
@@ -195,16 +251,12 @@ export default function Home() {
             options
           );
         } catch (e) {
-          // #region agent log - Conversion error
           console.error("[DEBUG] ImageTracer error:", e);
-          // #endregion
           reject(e);
         }
       });
     } catch (err: unknown) {
-      // #region agent log - Catch error
       console.error("[DEBUG] Conversion error:", err);
-      // #endregion
       const errorMessage = err && typeof err === "object" && "message" in err 
         ? String(err.message) 
         : "Conversion failed";
