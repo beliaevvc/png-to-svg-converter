@@ -161,18 +161,20 @@ export default function Home() {
         console.log("[DEBUG] Image analysis:", { hasAlpha, avgBrightness: avgBrightness.toFixed(0), isLightOnTransparent });
         
         if (isLightOnTransparent) {
-          // Extract alpha channel as grayscale (inverted for tracing)
+          // Extract alpha channel - opaque pixels become BLACK (traced), transparent becomes WHITE (ignored)
           console.log("[DEBUG] Extracting alpha channel as mask...");
           for (let i = 0; i < data.length; i += 4) {
             const alpha = data[i + 3];
-            // Invert: opaque becomes black (for tracing), transparent becomes white
+            // Opaque (alpha=255) → black (0), Transparent (alpha=0) → white (255)
+            // This way ImageTracer traces the BLACK areas (the logo shape)
             const value = 255 - alpha;
             data[i] = value;     // R
-            data[i + 1] = value; // G
+            data[i + 1] = value; // G  
             data[i + 2] = value; // B
             data[i + 3] = 255;   // Full opacity
           }
           ctx.putImageData(imageData, 0, 0);
+          console.log("[DEBUG] Alpha mask created: opaque→black, transparent→white");
           resolve(canvas.toDataURL("image/png"));
         } else {
           // Use original image
@@ -232,7 +234,10 @@ export default function Home() {
           window.ImageTracer.imageToSVG(
             processedImage,
             (svgString: string) => {
-              console.log("[DEBUG] Conversion complete, SVG length:", svgString?.length);
+              console.log("[DEBUG] Raw SVG length:", svgString?.length);
+              console.log("[DEBUG] Raw SVG preview:", svgString?.substring(0, 500));
+              
+              const beforeLength = svgString?.length || 0;
               
               // Replace black with user's output color
               svgString = svgString.replace(/fill="rgb\(0,0,0\)"/g, `fill="${settings.outputColor}"`);
@@ -240,10 +245,16 @@ export default function Home() {
               svgString = svgString.replace(/fill="#000000"/g, `fill="${settings.outputColor}"`);
               svgString = svgString.replace(/stroke="#000000"/g, `stroke="${settings.outputColor}"`);
               
+              console.log("[DEBUG] After color replace, length:", svgString?.length);
+              
               // Remove white background paths
               svgString = svgString.replace(/<path[^>]*fill="rgb\(255,255,255\)"[^>]*\/>/g, "");
               svgString = svgString.replace(/<path[^>]*fill="#ffffff"[^>]*\/>/gi, "");
               svgString = svgString.replace(/<path[^>]*fill="#FFFFFF"[^>]*\/>/g, "");
+              
+              console.log("[DEBUG] After white removal, length:", svgString?.length);
+              console.log("[DEBUG] Removed bytes:", beforeLength - (svgString?.length || 0));
+              console.log("[DEBUG] Final SVG preview:", svgString?.substring(0, 500));
               
               setSvgResult(svgString);
               resolve();
